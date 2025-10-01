@@ -138,7 +138,9 @@
         setLoading(true);
         try {
           const res = await fetch('/predict', { method: 'POST', body: formData });
-          const data = await res.json();
+          const contentType = res.headers.get('content-type') || '';
+          const isJson = contentType.includes('application/json');
+          const data = isJson ? await res.json() : { error: await res.text() };
           if (!res.ok) throw new Error(data.error || 'Request failed');
           showResults(data);
         } catch (err) {
