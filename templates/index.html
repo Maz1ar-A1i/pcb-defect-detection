@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PCB Defect Detector</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      /* PCB-themed light palette */
+      body { background-color: #eaf7ee; color: #0f172a; }
+      .card { background-color: #ffffff; border: 1px solid #cce9d8; box-shadow: 0 1px 2px rgba(16,24,40,.06); }
+      .btn-primary { background-color: #16a34a; border-color: #16a34a; }
+      .btn-secondary { background-color: #0f766e; border-color: #0f766e; }
+      .btn-outline-dark { border-color: #065f46; color: #065f46; }
+      .btn-outline-dark:hover { background-color: #065f46; color: #fff; }
+      .muted { color: #2f5d4b; }
+      img, video, canvas { max-width: 100%; border-radius: .5rem; border: 1px solid #cce9d8; background:#f4fbf6; }
+      code { color: #047857; }
+      .spinner-border { width: 2rem; height: 2rem; }
+      a, a:hover { color: #0e7a3b; }
+      .section-title { color: #0b3d2e; }
+      .help { font-size: .9rem; }
+      .status { min-height: 1.5rem; }
+    </style>
+  </head>
+  <body>
+    <div class="container py-4">
+      <div class="d-flex align-items-center mb-4">
+        <h2 class="mb-0">🔍 PCB Defect Detector</h2>
+        <span class="ms-3 badge bg-info text-dark">YOLO</span>
+      </div>
+
+      <div class="alert alert-warning d-none" id="insecure-warning">
+        Camera may not work over plain HTTP on non-local addresses. Please use <strong>http://127.0.0.1:5000</strong> or HTTPS.
+      </div>
+
+      <div class="row g-4">
+        <div class="col-lg-6">
+          <div class="card p-3 h-100">
+            <h5 class="section-title">1) Upload an image</h5>
+            <p class="muted help">Accepted: JPG/PNG. The server will run inference and return an annotated image.</p>
+            <form id="upload-form" class="mb-3">
+              <input class="form-control" type="file" id="file-input" accept="image/*" required>
+              <div class="mt-3">
+                <button type="submit" class="btn btn-primary btn-lg">Run Detection</button>
+              </div>
+            </form>
+
+            <hr class="border-secondary">
+
+            <h5 class="section-title">2) Or use your webcam</h5>
+            <p class="muted help">Click <strong>Enable Camera</strong>, approve the browser permission, capture a frame, then run detection.</p>
+
+            <div class="d-flex gap-3 flex-wrap align-items-start">
+              <div>
+                <video id="webcam" autoplay playsinline muted width="360" height="270"></video>
+                <div class="mt-2 d-flex gap-2">
+                  <button id="enable-camera" class="btn btn-secondary" type="button">Enable Camera</button>
+                  <button id="capture" class="btn btn-outline-dark" type="button">Capture Frame</button>
+                </div>
+                <div class="status text-danger small mt-2" id="camera-status"></div>
+              </div>
+              <div>
+                <canvas id="snapshot" width="360" height="270"></canvas>
+                <div class="mt-2">
+                  <button id="detect-snapshot" class="btn btn-primary" type="button">Run Detection</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h5 class="mb-0 section-title">Results</h5>
+              <div id="loading" class="d-none">
+                <div class="spinner-border text-secondary" role="status"></div>
+              </div>
+            </div>
+            <div id="results" class="mb-3">
+              <p class="muted mb-2">- Input image</p>
+              <img id="input-preview" alt="Input preview" />
+              <p class="muted mt-3 mb-2">- Annotated result</p>
+              <img id="result-preview" alt="Result preview" />
+            </div>
+            <div>
+              <h6>Detections (raw)</h6>
+              <pre id="json" class="bg-light text-dark border p-3 rounded small" style="max-height: 300px; overflow:auto"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-center mt-4 muted small">
+        Inference endpoint: <code>POST /predict</code>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      const uploadForm = document.getElementById('upload-form');
+      const fileInput = document.getElementById('file-input');
+      const inputPreview = document.getElementById('input-preview');
+      const resultPreview = document.getElementById('result-preview');
+      const jsonPre = document.getElementById('json');
+      const loading = document.getElementById('loading');
+
+      const enableCamBtn = document.getElementById('enable-camera');
+      const captureBtn = document.getElementById('capture');
+      const detectSnapshotBtn = document.getElementById('detect-snapshot');
+      const video = document.getElementById('webcam');
+      const canvas = document.getElementById('snapshot');
+      const ctx = canvas.getContext('2d');
+      const cameraStatus = document.getElementById('camera-status');
+      const insecureWarning = document.getElementById('insecure-warning');
+      let stream;
+
+      function setLoading(isLoading) {
+        loading.classList.toggle('d-none', !isLoading);
+      }
+
+      function showResults(data) {
+        if (data.input_image) {
+          inputPreview.src = data.input_image + `?t=${Date.now()}`;
+        }
+        if (data.result_image) {
+          resultPreview.src = data.result_image + `?t=${Date.now()}`;
+        }
+        jsonPre.textContent = JSON.stringify({
+          detections: data.detections,
+          labels: data.labels,
+          scores: data.scores
+        }, null, 2);
+      }
+
+      async function postFormData(formData) {
+        setLoading(true);
+        try {
+          const res = await fetch('/predict', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Request failed');
+          showResults(data);
+        } catch (err) {
+          alert(err.message || 'Failed to run detection');
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      // Image upload flow
+      uploadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) { alert('Please choose an image.'); return; }
+        const formData = new FormData();
+        formData.append('file', file);
+        // local preview of input
+        inputPreview.src = URL.createObjectURL(file);
+        resultPreview.removeAttribute('src');
+        jsonPre.textContent = '';
+        postFormData(formData);
+      });
+
+      // Enable camera directly (triggers browser permission prompt)
+      enableCamBtn.addEventListener('click', async () => {
+        cameraStatus.textContent = '';
+        try {
+          if (!('mediaDevices' in navigator) || !('getUserMedia' in navigator.mediaDevices)) {
+            throw new Error('Camera API not supported in this browser.');
+          }
+          // HTTPS or localhost requirement
+          const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+          const isSecure = location.protocol === 'https:' || isLocalhost;
+          if (!isSecure) {
+            insecureWarning.classList.remove('d-none');
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+          video.srcObject = stream;
+          cameraStatus.classList.remove('text-danger');
+          cameraStatus.classList.add('text-success');
+          cameraStatus.textContent = 'Camera enabled.';
+        } catch (e) {
+          cameraStatus.classList.remove('text-success');
+          cameraStatus.classList.add('text-danger');
+          cameraStatus.textContent = e?.message || 'Camera access denied or unavailable.';
+        }
+      });
+
+      captureBtn.addEventListener('click', () => {
+        if (!video.videoWidth) { alert('Start the camera first.'); return; }
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // preview input from canvas
+        inputPreview.src = canvas.toDataURL('image/jpeg');
+        resultPreview.removeAttribute('src');
+        jsonPre.textContent = '';
+      });
+
+      detectSnapshotBtn.addEventListener('click', async () => {
+        // Ensure there is something on canvas
+        if (canvas.width === 0 || canvas.height === 0) { alert('Capture a frame first.'); return; }
+        canvas.toBlob(async (blob) => {
+          const formData = new FormData();
+          // Backend accepts key 'image' for webcam blobs
+          formData.append('image', blob, 'webcam.jpg');
+          postFormData(formData);
+        }, 'image/jpeg', 0.92);
+      });
+    </script>
+  </body>
+  </html>
+
+
