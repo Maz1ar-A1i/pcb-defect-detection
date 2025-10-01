@@ -67,22 +67,31 @@ def predict():
         except Exception:
             pass
 
-        # Run YOLO detection and save results to a dedicated subfolder per request
+        # Run YOLO detection (no auto-save). We'll plot and save once to reduce IO/memory.
         run_name = os.path.splitext(filename)[0]
         results = model.predict(
             file_path,
             device="cpu",
-            imgsz=640,
+            imgsz=512,
             conf=0.25,
-            save=True,
-            project=RESULTS_FOLDER,
-            name=run_name,
+            save=False,
+            verbose=False,
         )
 
-        # Determine annotated image path from results
-        save_dir = getattr(results[0], "save_dir", os.path.join(RESULTS_FOLDER, run_name))
+        # Prepare output directory and save annotated image
+        save_dir = os.path.join(RESULTS_FOLDER, run_name)
+        os.makedirs(save_dir, exist_ok=True)
         annotated_filename = os.path.basename(file_path)
         result_img_path = os.path.join(save_dir, annotated_filename)
+        try:
+            import numpy as np
+            import cv2 as _cv2
+            annotated = results[0].plot()  # numpy array, BGR
+            _cv2.imwrite(result_img_path, annotated)
+        except Exception as _plot_exc:
+            # Fallback: if plotting fails, just copy the original
+            import shutil
+            shutil.copyfile(file_path, result_img_path)
 
         # Normalize paths to URL format for frontend (Windows-safe)
         def to_url_path(path):
