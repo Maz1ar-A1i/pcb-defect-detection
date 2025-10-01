@@ -1,4 +1,5 @@
 from flask import Flask, request, render_template, jsonify
+import torch
 from ultralytics import YOLO
 import os
 import cv2
@@ -7,8 +8,17 @@ import uuid
 # Initialize Flask app
 app = Flask(__name__)
 
-# Load your trained YOLO model once at startup
+# Reduce CPU thread usage to avoid OOM on small instances
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+try:
+    torch.set_num_threads(1)
+except Exception:
+    pass
+
+# Load your trained YOLO model once at startup (CPU)
 model = YOLO("best.pt")  # change path if your weights are elsewhere
+model.to("cpu")
 
 # Ensure uploads folder exists
 UPLOAD_FOLDER = "static/uploads"
@@ -42,11 +52,28 @@ def predict():
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         uploaded.save(file_path)
 
+        # Downscale very large images to reduce memory/CPU usage
+        try:
+            import PIL.Image as Image
+            with Image.open(file_path) as im:
+                im = im.convert("RGB")
+                max_side = 1280
+                w, h = im.size
+                scale = min(1.0, max_side / max(w, h))
+                if scale < 1.0:
+                    new_size = (int(w * scale), int(h * scale))
+                    im = im.resize(new_size, Image.LANCZOS)
+                    im.save(file_path, format="JPEG", quality=90)
+        except Exception:
+            pass
+
         # Run YOLO detection and save results to a dedicated subfolder per request
         run_name = os.path.splitext(filename)[0]
         results = model.predict(
             file_path,
             device="cpu",
+            imgsz=640,
+            conf=0.25,
             save=True,
             project=RESULTS_FOLDER,
             name=run_name,
