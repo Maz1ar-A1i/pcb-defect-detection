@@ -72,7 +72,7 @@ def predict():
         results = model.predict(
             file_path,
             device="cpu",
-            imgsz=512,
+            imgsz=640,
             conf=0.25,
             save=False,
             verbose=False,
